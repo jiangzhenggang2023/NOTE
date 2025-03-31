@@ -1,0 +1,83 @@
+一、环境准备
+​验证K3s集群状态
+确保K3s集群正常运行，且各节点满足OpenEBS的存储需求。K3s默认使用SQLite作为存储后端，但部署OpenEBS无需额外调整集群存储机制。
+kubectl get nodes  # 确认所有节点状态为Ready
+​节点磁盘准备
+若使用LocalPV或cStor存储引擎，需确保工作节点有可用磁盘（如未分区磁盘或目录挂载）。例如，为节点挂载额外磁盘/dev/sdb，供OpenEBS创建存储池使用。
+二、安装OpenEBS
+方法1：通过Helm安装（推荐）
+​添加Helm仓库并更新
+helm repo add openebs https://openebs.github.io/charts
+helm repo update
+​安装OpenEBS核心组件
+默认安装LocalPV Hostpath、LVM、ZFS及cStor引擎：
+helm install openebs openebs/openebs --namespace openebs --create-namespace
+​可选配置：
+​禁用复制存储​（如仅需本地存储）：
+helm install openebs --set engines.replicated.enabled=false ...
+​指定镜像仓库​（国内环境加速）：
+--set jiva.imageTag="registry.cn-hangzhou.aliyuncs.com/openebs/jiva" ...
+方法2：通过YAML文件安装
+直接应用官方Operator文件（适用于快速测试）：
+
+kubectl apply -f https://openebs.github.io/charts/openebs-operator.yaml
+三、验证安装状态
+​检查Pod状态
+所有OpenEBS组件（如maya-apiserver、openebs-provisioner）应处于Running状态：
+kubectl get pods -n openebs
+​确认StorageClass创建
+OpenEBS默认创建openebs-hostpath等存储类，可设为默认：
+kubectl patch storageclass openebs-hostpath -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+四、配置存储引擎
+1. LocalPV Hostpath（轻量级首选）
+​适用场景：单节点测试或开发环境，数据持久化到节点本地目录。
+​使用示例：
+创建PVC时引用openebs-hostpath存储类：
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: demo-pvc
+spec:
+  storageClassName: openebs-hostpath
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+2. cStor（生产级分布式存储）
+​适用场景：多节点高可用，支持数据副本、快照等高级功能。
+​配置步骤：
+​创建cStor存储池
+kubectl apply -f https://openebs.github.io/charts/cstor-pool.yaml
+​定义StorageClass
+自定义副本数、存储池等参数：
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: openebs-cstor
+provisioner: openebs.io/provisioner-iscsi
+parameters:
+  openebs.io/storage-pool: "cstor-disk-pool"
+  openebs.io/replica-count: "3"
+五、验证存储功能
+​创建测试Pod挂载PVC
+yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - mountPath: /data
+      name: demo-vol
+  volumes:
+  - name: demo-vol
+    persistentVolumeClaim:
+      claimName: demo-pvc
+​检查数据持久化
+写入文件后删除Pod，重新创建确认数据是否保留。
+六、故障排查
+​Pod无法挂载卷：检查StorageClass配置、节点磁盘状态及OpenEBS组件日志。
+​cStor池未就绪：确认节点磁盘已正确挂载，且cStor相关Pod无报错
